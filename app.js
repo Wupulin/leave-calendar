@@ -29,3 +29,52 @@ $('#loginForm').onsubmit=e=>{e.preventDefault();const m=member($('#loginMember')
 $('#days').onclick=e=>{const b=e.target.closest('[data-date]');if(b)openDay(b.dataset.date)};$('#reserveBtn').onclick=toggle;$('#adminAdd').onclick=()=>state.phase===3?addLong($('#adjustMember').value,true):(()=>{const id=$('#adjustMember').value;if(items(selected).some(b=>b.memberId===id&&b.phase!==3))return toast('此成員已預約');(state.bookings[selected]??=[]).push({memberId:id,phase:state.phase});save();closeDay()})();$('#bookingList').onclick=e=>{const b=e.target.closest('[data-remove]');if(!b)return;if(+b.dataset.phase===3)removeBlock(b.dataset.block);else{state.bookings[selected]=items(selected).filter(x=>!(x.memberId===b.dataset.remove&&x.phase!==3));if(!state.bookings[selected].length)delete state.bookings[selected]}save();closeDay()};
 $$('[data-phase]').forEach(b=>b.onclick=()=>{state.phase=+b.dataset.phase;save();render()});$('#prev').onclick=()=>{view.setMonth(view.getMonth()-1);render()};$('#next').onclick=()=>{view.setMonth(view.getMonth()+1);render()};$('#printBtn').onclick=()=>print();$('#excelBtn').onclick=exportExcel;$('#adminBtn').onclick=renderAdmin;$('#saveAdmin').onclick=saveAdmin;$('#addMember').onclick=()=>{const n=$('#newName').value.trim();if(!n)return;state.members.push({id:'m'+Date.now(),name:n,group:$('#newGroup').value,pin:'00000',admin:false});$('#newName').value='';renderAdmin()};$('#memberRows').onclick=e=>{const r=e.target.closest('.member-row');if(!r)return;if(e.target.classList.contains('admin-choice')){$$('.admin-choice').forEach(b=>{b.classList.remove('active');b.textContent='設為管理員'});e.target.classList.add('active');e.target.textContent='目前管理員'}if(e.target.classList.contains('reset')){member(r.dataset.id).pin='00000';save();toast('PIN 已重設為 00000')}if(e.target.classList.contains('remove')){if(member(r.dataset.id)?.admin)return toast('不可移除管理員');state.members=state.members.filter(m=>m.id!==r.dataset.id);r.remove()}};$$('[data-close]').forEach(b=>b.onclick=()=>$('#'+b.dataset.close).close());
 render();if(!me())showLogin();
+
+// ---- Supabase cloud mode -------------------------------------------------
+const cloudConfig=window.SUPABASE_CONFIG;
+const cloudEnabled=!!(cloudConfig?.url&&cloudConfig?.publishableKey);
+const cloudTokenKey='npCloudSession';
+async function cloudCall(action,payload={},authenticated=true){
+  const headers={'Content-Type':'application/json',apikey:cloudConfig.publishableKey};
+  const token=sessionStorage.getItem(cloudTokenKey);
+  if(authenticated&&token)headers.Authorization=`Bearer ${token}`;
+  const response=await fetch(`${cloudConfig.url}/functions/v1/${cloudConfig.functionName}`,{method:'POST',headers,body:JSON.stringify({action,...payload})});
+  const result=await response.json().catch(()=>({error:'invalid_response'}));
+  if(!response.ok){const error=new Error(result.error||'cloud_error');error.code=result.error;throw error}
+  return result
+}
+function applyCloudState(data){
+  state.members=(data.members||[]).map(m=>({id:m.id,name:m.name,group:m.unit,admin:m.is_admin,isActive:m.is_active,pin:'cloud'}));
+  const s=data.settings||{};
+  state.schedule={bookingMonth:String(s.booking_month||nowMonth).slice(0,7),p1End:s.phase1_end||today,p2Start:s.phase2_start||today,p2End:s.phase2_end||today,p3Start:s.phase3_start||today,p3End:s.phase3_end||today,longStart:String(s.long_leave_start_month||nowMonth).slice(0,7),longEnd:String(s.long_leave_end_month||nowMonth).slice(0,7)};
+  state.phaseLimits={1:s.phase1_member_limit||2,2:s.phase2_member_limit||31};
+  state.limits={ICU:s.icu_daily_limit||1,病房:s.ward_daily_limit||3};
+  state.bookings={};
+  for(const b of data.bookings||[]){(state.bookings[b.booking_date]??=[]).push({id:b.id,memberId:b.member_id,phase:b.phase,blockId:b.long_leave_block_id,status:b.status,adminAdjusted:b.admin_adjusted})}
+  if(data.currentMember?.id)sessionStorage.setItem('npAuth',data.currentMember.id);
+  view=new Date(`${state.schedule.bookingMonth}-01T12:00:00`);
+}
+async function cloudRefresh(){const data=await cloudCall('state');applyCloudState(data);render();return data}
+function cloudMessage(code){return({invalid_login:'姓名或 PIN 不正確',unauthorized:'登入已過期，請重新登入',booking_conflict:'這段日期已有預約',invalid_booking:'預約資料不正確',invalid_current_pin:'目前 PIN 不正確',invalid_new_pin:'新 PIN 必須為 5 位數字',forbidden:'沒有操作權限'}[code]||'雲端操作失敗，請稍後再試')}
+async function cloudBoot(){
+  if(!cloudEnabled)return;
+  try{
+    const token=sessionStorage.getItem(cloudTokenKey);
+    if(token){try{await cloudRefresh();return}catch{sessionStorage.removeItem(cloudTokenKey);sessionStorage.removeItem('npAuth')}}
+    const data=await cloudCall('members',{},false);
+    state.members=data.members.map(m=>({id:m.id,name:m.name,group:m.unit,admin:false,pin:'cloud'}));
+    showLogin();
+  }catch{toast('目前無法連接雲端，請檢查網路')}
+}
+if(cloudEnabled){
+  $('#loginForm').onsubmit=async e=>{e.preventDefault();$('#loginError').textContent='';try{const data=await cloudCall('login',{memberId:$('#loginMember').value,pin:$('#loginPin').value},false);sessionStorage.setItem(cloudTokenKey,data.token);sessionStorage.setItem('npAuth',data.member.id);await cloudRefresh();$('#loginDlg').close();toast(`${data.member.name}，雲端登入成功`)}catch(error){$('#loginError').textContent=cloudMessage(error.code)}};
+  $('#logoutBtn').onclick=async()=>{try{await cloudCall('logout')}catch{}sessionStorage.removeItem(cloudTokenKey);sessionStorage.removeItem('npAuth');await cloudBoot()};
+  $('#reserveBtn').onclick=async()=>{const mine=items(selected).filter(relevant).find(b=>b.memberId===me()?.id);try{if(mine)await cloudCall('cancel',{bookingId:mine.id});else await cloudCall('reserve',{date:selected,phase:state.phase});$('#dayDlg').close();await cloudRefresh();toast(mine?'已取消雲端預約':'雲端預約成功')}catch(error){toast(cloudMessage(error.code))}};
+  $('#adminAdd').onclick=async()=>{try{await cloudCall('reserve',{date:selected,phase:state.phase,memberId:$('#adjustMember').value});$('#dayDlg').close();await cloudRefresh();toast('已由管理員加入預約')}catch(error){toast(cloudMessage(error.code))}};
+  $('#bookingList').onclick=async e=>{const button=e.target.closest('[data-remove]');if(!button)return;const booking=items(selected).filter(relevant).find(b=>b.memberId===button.dataset.remove);if(!booking)return;try{await cloudCall('cancel',{bookingId:booking.id});$('#dayDlg').close();await cloudRefresh();toast('已移除雲端預約')}catch(error){toast(cloudMessage(error.code))}};
+  $('#pinForm').onsubmit=async e=>{e.preventDefault();const next=$('#newPin').value;if(!/^\d{5}$/.test(next))return $('#pinError').textContent='新 PIN 必須為 5 位數字';if(next!==$('#confirmPin').value)return $('#pinError').textContent='兩次輸入不一致';try{await cloudCall('change-pin',{currentPin:$('#oldPin').value,newPin:next});$('#pinDlg').close();toast('PIN 已安全更新')}catch(error){$('#pinError').textContent=cloudMessage(error.code)}};
+  $('#saveAdmin').onclick=async()=>{const rows=$$('.member-row'),chosen=$('.admin-choice.active')?.closest('.member-row')?.dataset.id;if(!chosen)return toast('必須指定一位管理員');const members=rows.map(r=>({id:r.dataset.id,name:r.querySelector('input').value.trim(),unit:r.querySelector('select').value,isAdmin:r.dataset.id===chosen}));const settings={bookingMonth:$('#bookingMonth').value,p1End:$('#p1End').value,p2Start:$('#p2Start').value,p2End:$('#p2End').value,p3Start:$('#p3Start').value,p3End:$('#p3End').value,longStart:$('#longStart').value,longEnd:$('#longEnd').value,p1Max:+$('#p1Max').value,p2Max:+$('#p2Max').value,icuMax:+$('#icuMax').value,wardMax:+$('#wardMax').value};if(Object.values(settings).some(v=>v===''||v===0))return toast('請完整填寫設定');try{await cloudCall('save-admin',{members,settings});$('#adminDlg').close();await cloudRefresh();toast('雲端管理設定已儲存')}catch(error){toast(cloudMessage(error.code))}};
+  $('#memberRows').onclick=async e=>{const row=e.target.closest('.member-row');if(!row)return;if(e.target.classList.contains('admin-choice')){$$('.admin-choice').forEach(b=>{b.classList.remove('active');b.textContent='設為管理員'});e.target.classList.add('active');e.target.textContent='目前管理員';return}if(e.target.classList.contains('reset')){try{await cloudCall('reset-pin',{memberId:row.dataset.id});toast('PIN 已重設為 00000')}catch(error){toast(cloudMessage(error.code))}return}if(e.target.classList.contains('remove')){if(row.querySelector('.admin-choice').classList.contains('active'))return toast('不可移除目前指定的管理員');row.remove()}};
+  cloudBoot();
+  setInterval(()=>{if(me()&&!document.querySelector('dialog[open]'))cloudRefresh().catch(()=>{})},15000);
+}
