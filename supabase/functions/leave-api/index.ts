@@ -108,6 +108,9 @@ Deno.serve(async req => {
       const targetId = actor.is_admin && body.memberId ? String(body.memberId) : actor.id;
       const phase = Number(body.phase), date = String(body.date || '');
       if (![1, 2, 3].includes(phase) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return reply(req, { error: 'invalid_booking' }, 400);
+      const { data: targetMember } = await db.from('members').select('id,unit,is_active').eq('id', targetId).maybeSingle();
+      if (!targetMember?.is_active) return reply(req, { error: 'member_not_found' }, 404);
+      if (phase !== 3 && !['ICU', '病房'].includes(targetMember.unit)) return reply(req, { error: 'unit_long_leave_only' }, 403);
       const dates = phase === 3 ? Array.from({ length: 7 }, (_, i) => addDays(date, i)) : [date];
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
       if (existing?.length) return reply(req, { error: 'booking_conflict' }, 409);
@@ -146,7 +149,8 @@ Deno.serve(async req => {
       if (activeIds.length) await db.from('members').update({ is_active: false }).not('id', 'in', `(${activeIds.join(',')})`);
       await db.from('members').update({ is_admin: false }).eq('is_admin', true);
       for (const item of members) {
-        const values = { name: String(item.name || '').trim(), unit: item.unit === 'ICU' ? 'ICU' : '病房', is_admin: !!item.isAdmin, is_active: true };
+        const requestedUnit = String(item.unit ?? '');
+        const values = { name: String(item.name || '').trim(), unit: ['ICU','病房','小夜','大夜',''].includes(requestedUnit) ? requestedUnit : '', is_admin: !!item.isAdmin, is_active: true };
         if (!values.name) continue;
         if (/^[0-9a-f-]{36}$/i.test(String(item.id || ''))) {
           const { error } = await db.from('members').update(values).eq('id', item.id); if (error) throw error;

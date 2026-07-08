@@ -6,7 +6,7 @@ create extension if not exists pgcrypto;
 create table if not exists public.members (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
-  unit text not null check (unit in ('ICU', '病房')),
+  unit text not null default '' check (unit in ('ICU', '病房', '小夜', '大夜', '')),
   pin_hash text not null,
   is_admin boolean not null default false,
   is_active boolean not null default true,
