@@ -156,6 +156,13 @@ Deno.serve(async req => {
       await audit(actor.id, 'reset_pin', 'member', id);
       return reply(req, { ok: true });
     }
+    if (action === 'clear-bookings') {
+      if (!actor.is_admin) return reply(req, { error: 'forbidden' }, 403);
+      const { error } = await db.from('bookings').update({ status: 'cancelled' }).neq('status', 'cancelled');
+      if (error) throw error;
+      await audit(actor.id, 'clear_bookings', 'booking', null, null, { scope: 'all' });
+      return reply(req, { ok: true });
+    }
     if (action === 'save-admin') {
       if (!actor.is_admin) return reply(req, { error: 'forbidden' }, 403);
       const settings = body.settings || {}, members = Array.isArray(body.members) ? body.members : [];
