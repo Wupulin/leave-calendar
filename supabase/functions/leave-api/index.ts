@@ -115,6 +115,20 @@ Deno.serve(async req => {
       const dates = phase === 3 ? Array.from({ length: 7 }, (_, i) => addDays(date, i)) : [date];
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
       if (existing?.length) return reply(req, { error: 'booking_conflict' }, 409);
+      if (!actor.is_admin && phase !== 3) {
+        const { data: settings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase2_member_limit').eq('id', 1).single();
+        const monthStart = String(settings?.booking_month || '').slice(0, 10);
+        const monthPrefix = monthStart.slice(0, 7);
+        if (!date.startsWith(monthPrefix)) return reply(req, { error: 'invalid_booking' }, 400);
+        const monthEnd = new Date(`${monthStart}T12:00:00Z`);
+        monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+        const { count: monthCount } = await db.from('bookings').select('id', { count: 'exact', head: true }).eq('member_id', targetId).neq('status', 'cancelled').in('phase', [1, 2]).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
+        if ((monthCount || 0) >= Number(settings?.phase2_member_limit || 0)) return reply(req, { error: 'monthly_leave_limit' }, 403);
+        if (phase === 1) {
+          const { count: phase1Count } = await db.from('bookings').select('id', { count: 'exact', head: true }).eq('member_id', targetId).neq('status', 'cancelled').eq('phase', 1).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
+          if ((phase1Count || 0) >= Number(settings?.phase1_member_limit || 0)) return reply(req, { error: 'phase1_leave_limit' }, 403);
+        }
+      }
       const block = phase === 3 ? crypto.randomUUID() : null;
       const rows = dates.map(booking_date => ({ member_id: targetId, booking_date, phase, long_leave_block_id: block, created_by: actor.id, admin_adjusted: actor.is_admin && targetId !== actor.id }));
       const { data, error } = await db.from('bookings').insert(rows).select('id');
