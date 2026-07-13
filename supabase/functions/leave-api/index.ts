@@ -111,6 +111,7 @@ Deno.serve(async req => {
       const { data: targetMember } = await db.from('members').select('id,unit,is_active').eq('id', targetId).maybeSingle();
       if (!targetMember?.is_active) return reply(req, { error: 'member_not_found' }, 404);
       if (phase !== 3 && !['ICU', '病房'].includes(targetMember.unit)) return reply(req, { error: 'unit_long_leave_only' }, 403);
+      if (phase === 3 && !['ICU', '病房', '小夜', '大夜'].includes(targetMember.unit)) return reply(req, { error: 'blank_unit_no_long_leave' }, 403);
       const dates = phase === 3 ? Array.from({ length: 7 }, (_, i) => addDays(date, i)) : [date];
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
       if (existing?.length) return reply(req, { error: 'booking_conflict' }, 409);
