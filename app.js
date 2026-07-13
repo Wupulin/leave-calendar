@@ -61,7 +61,7 @@ function applyCloudState(data,resetView=false){
   if(resetView)view=new Date(`${state.schedule.bookingMonth}-01T12:00:00`);
 }
 async function cloudRefresh(resetView=false){const data=await cloudCall('state');applyCloudState(data,resetView);render();return data}
-function cloudMessage(code){return({invalid_login:'姓名或 PIN 不正確',unauthorized:'登入已過期，請重新登入',booking_conflict:'這段日期已有預約',invalid_booking:'預約資料不正確',invalid_current_pin:'目前 PIN 不正確',invalid_new_pin:'新 PIN 必須為 5 位數字',unit_long_leave_only:'小夜、大夜及空白類別只能預約長假',blank_unit_no_long_leave:'空白班別不可預約長假',monthly_leave_limit:'已達本月第一、二階段可預假天數上限',phase1_leave_limit:'已達第一階段可預假天數上限',member_not_found:'找不到此成員',forbidden:'沒有操作權限'}[code]||'雲端操作失敗，請稍後再試')}
+function cloudMessage(code){return({invalid_login:'姓名或 PIN 不正確',unauthorized:'登入已過期，請重新登入',booking_conflict:'這段日期已有預約',invalid_booking:'預約資料不正確',invalid_current_pin:'目前 PIN 不正確',invalid_new_pin:'新 PIN 必須為 5 位數字',unit_long_leave_only:'小夜、大夜及空白類別只能預約長假',blank_unit_no_long_leave:'空白班別不可預約長假',monthly_leave_limit:'已達本月第一、二階段可預假天數上限',phase1_leave_limit:'已達第一階段可預假天數上限',member_not_found:'找不到此成員',forbidden:'沒有操作權限',unknown_action:'雲端 leave-api 尚未更新，請重新部署 Edge Function',server_error:'雲端 leave-api 執行失敗，請重新部署或查看 Supabase Logs'}[code]||`雲端操作失敗${code?`：${code}`:''}`)}
 async function cloudBoot(){
   if(!cloudEnabled)return;
   try{
