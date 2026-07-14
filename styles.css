@@ -3,3 +3,4 @@
 .count.tag-icu,.names.tag-icu{background:#dceee7;color:#173b35}.count.tag-ward,.names.tag-ward{background:#e8e2f5;color:#31264f}.count.tag-long-day,.names.tag-long-day{background:#dcecf8;color:#16364d}.count.tag-long-night,.names.tag-long-night{background:#f1e3d5;color:#57331c}.count.over,.names.over,.over{background:#f7d8d1;color:#7c342a}
 .admin-actions{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}.danger{background:#fff3f0;border-color:#e6b4aa;color:#8a3327}.danger:hover{border-color:#a94e3f}
 .quota-num{font-weight:900;font-size:1.08em;padding:0 .12em}.quota-limit{color:#2563a8}.quota-used{color:#a94e3f}.quota-left{color:#1f7a4d}
+.clear-month{display:flex;align-items:center;gap:8px;color:#6c7c77}.clear-month input{width:150px}

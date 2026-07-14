@@ -158,9 +158,14 @@ Deno.serve(async req => {
     }
     if (action === 'clear-bookings') {
       if (!actor.is_admin) return reply(req, { error: 'forbidden' }, 403);
-      const { error } = await db.from('bookings').update({ status: 'cancelled' }).neq('status', 'cancelled');
+      const month = String(body.month || '');
+      if (!/^\d{4}-\d{2}$/.test(month)) return reply(req, { error: 'invalid_month' }, 400);
+      const monthStart = `${month}-01`;
+      const monthEnd = new Date(`${monthStart}T12:00:00Z`);
+      monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+      const { error } = await db.from('bookings').update({ status: 'cancelled' }).neq('status', 'cancelled').gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
       if (error) throw error;
-      await audit(actor.id, 'clear_bookings', 'booking', null, null, { scope: 'all' });
+      await audit(actor.id, 'clear_bookings', 'booking', null, null, { scope: 'month', month });
       return reply(req, { ok: true });
     }
     if (action === 'save-admin') {
