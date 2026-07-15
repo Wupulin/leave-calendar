@@ -135,7 +135,7 @@ Deno.serve(async req => {
       const dates = phase === 3 ? longLeaveDates(date, longLeaveDays) : [date];
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
       if (existing?.length) return reply(req, { error: 'booking_conflict' }, 409);
-      if (!actor.is_admin && phase !== 3) {
+      if (phase !== 3 && (!actor.is_admin || targetId === actor.id)) {
         const { data: settings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase1_other_limit,phase2_member_limit').eq('id', 1).single();
         const monthStart = String(settings?.booking_month || '').slice(0, 10);
         const monthPrefix = monthStart.slice(0, 7);
