@@ -137,7 +137,7 @@ Deno.serve(async (req) => {
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
       if (existing && existing.length) return reply(req, { error: 'booking_conflict' }, 409);
       if (phase !== 3 && (!actor.is_admin || targetId === actor.id)) {
-        const { data: settings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase1_other_limit,phase2_member_limit').eq('id', 1).single();
+        const { data: settings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase2_member_limit').eq('id', 1).single();
         const monthStart = String((settings && settings.booking_month) || '').slice(0, 10);
         const monthPrefix = monthStart.slice(0, 7);
         if (!date.startsWith(monthPrefix)) return reply(req, { error: 'invalid_booking' }, 400);
@@ -146,11 +146,8 @@ Deno.serve(async (req) => {
         const { count: monthCount } = await db.from('bookings').select('id', { count: 'exact', head: true }).eq('member_id', targetId).neq('status', 'cancelled').in('phase', [1, 2]).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
         if ((monthCount || 0) >= Number((settings && settings.phase2_member_limit) || 0)) return reply(req, { error: 'monthly_leave_limit' }, 403);
         if (phase === 1) {
-          const { data: phase1Rows } = await db.from('bookings').select('booking_date').eq('member_id', targetId).neq('status', 'cancelled').eq('phase', 1).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
-          const targetIsAdjacent = isHolidayAdjacent(date);
-          const phase1KindCount = (phase1Rows || []).filter((row) => isHolidayAdjacent(String(row.booking_date).slice(0, 10)) === targetIsAdjacent).length;
-          const limit = targetIsAdjacent ? Number((settings && settings.phase1_member_limit) || 0) : Number((settings && settings.phase1_other_limit) || 0);
-          if (phase1KindCount >= limit) return reply(req, { error: targetIsAdjacent ? 'phase1_holiday_limit' : 'phase1_other_limit' }, 403);
+          const { count: phase1Count } = await db.from('bookings').select('id', { count: 'exact', head: true }).eq('member_id', targetId).neq('status', 'cancelled').eq('phase', 1).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
+          if ((phase1Count || 0) >= Number((settings && settings.phase1_member_limit) || 0)) return reply(req, { error: 'phase1_leave_limit' }, 403);
         }
       }
       const block = phase === 3 ? crypto.randomUUID() : null;
@@ -219,7 +216,7 @@ Deno.serve(async (req) => {
         phase2_start: settings.p2Start, phase2_end: settings.p2End,
         phase3_start: settings.p3Start, phase3_end: settings.p3End,
         long_leave_start_month: `${settings.longStart}-01`, long_leave_end_month: `${settings.longEnd}-01`,
-        phase1_member_limit: Number(settings.p1Max), phase1_other_limit: Number(settings.p1OtherMax), phase2_member_limit: Number(settings.p2Max),
+        phase1_member_limit: Number(settings.p1Max), phase1_other_limit: Number(settings.p1Max), phase2_member_limit: Number(settings.p2Max),
         icu_daily_limit: Number(settings.icuMax), ward_daily_limit: Number(settings.wardMax),
         long_leave_daily_limit: 1, updated_by: actor.id
       };
