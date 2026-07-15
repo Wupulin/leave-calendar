@@ -1,7 +1,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
-const url = Deno.env.get('SUPABASE_URL')!;
-const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const url = Deno.env.get('SUPABASE_URL') || '';
+const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const db = createClient(url, serviceKey, { auth: { persistSession: false } });
 const allowedOrigins = new Set([
   'https://wupulin.github.io',
@@ -10,7 +10,7 @@ const allowedOrigins = new Set([
   'null'
 ]);
 
-function cors(req: Request) {
+function cors(req) {
   const origin = req.headers.get('origin') || '';
   return {
     'Access-Control-Allow-Origin': allowedOrigins.has(origin) ? origin : 'https://wupulin.github.io',
@@ -20,10 +20,10 @@ function cors(req: Request) {
     'Vary': 'Origin'
   };
 }
-function reply(req: Request, data: unknown, status = 200) {
+function reply(req, data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: cors(req) });
 }
-async function sha256(value: string) {
+async function sha256(value) {
   const bytes = new TextEncoder().encode(value);
   const hash = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(hash)].map(x => x.toString(16).padStart(2, '0')).join('');
@@ -32,33 +32,34 @@ function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 }
-async function session(req: Request) {
-  const token = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
+async function session(req) {
+  const authHeader = req.headers.get('authorization') || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '');
   if (!token) return null;
   const tokenHash = await sha256(token);
   const { data: row } = await db.from('member_sessions').select('id,member_id,expires_at,revoked_at').eq('token_hash', tokenHash).maybeSingle();
   if (!row || row.revoked_at || new Date(row.expires_at) <= new Date()) return null;
   const { data: member } = await db.from('members').select('id,name,unit,is_admin,is_active').eq('id', row.member_id).maybeSingle();
-  if (!member?.is_active) return null;
+  if (!member || !member.is_active) return null;
   await db.from('member_sessions').update({ last_used_at: new Date().toISOString() }).eq('id', row.id);
   return { token, row, member };
 }
-async function audit(actor: string | null, action: string, type: string, id: string | null, before: unknown = null, after: unknown = null) {
+async function audit(actor, action, type, id, before = null, after = null) {
   await db.from('audit_logs').insert({ actor_member_id: actor, action, entity_type: type, entity_id: id, before_data: before, after_data: after });
 }
-function addDays(date: string, amount: number) {
+function addDays(date, amount) {
   const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + amount); return d.toISOString().slice(0, 10);
 }
 const holidays = new Set(['2026-01-01','2026-02-16','2026-02-17','2026-02-18','2026-02-19','2026-02-20','2026-02-27','2026-04-03','2026-04-06','2026-05-01','2026-06-19','2026-09-25','2026-09-28','2026-10-09','2026-10-26','2026-12-25']);
-function isHoliday(date: string) {
+function isHoliday(date) {
   const d = new Date(`${date}T12:00:00Z`);
   return d.getUTCDay() === 0 || d.getUTCDay() === 6 || holidays.has(date);
 }
-function isHolidayAdjacent(date: string) {
+function isHolidayAdjacent(date) {
   return !isHoliday(date) && (isHoliday(addDays(date, -1)) || isHoliday(addDays(date, 1)));
 }
-function longLeaveDates(startDate: string, leaveDays: number) {
-  const dates: string[] = [];
+function longLeaveDates(startDate, leaveDays) {
+  const dates = [];
   let date = startDate, workdays = 0, guard = 0;
   while (workdays < leaveDays && guard < 40) {
     dates.push(date);
@@ -69,7 +70,7 @@ function longLeaveDates(startDate: string, leaveDays: number) {
   return dates;
 }
 
-Deno.serve(async req => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(req) });
   if (req.method !== 'POST') return reply(req, { error: 'method_not_allowed' }, 405);
   try {
@@ -86,8 +87,8 @@ Deno.serve(async req => {
       if (!/^\d{5}$/.test(pin)) return reply(req, { error: 'invalid_login' }, 401);
       const { data: verified, error: verifyError } = await db.rpc('verify_member_pin', { p_member_id: body.memberId, p_pin: pin });
       if (verifyError) throw verifyError;
-      const member = verified?.[0];
-      if (!member?.is_active) return reply(req, { error: 'invalid_login' }, 401);
+      const member = verified && verified[0];
+      if (!member || !member.is_active) return reply(req, { error: 'invalid_login' }, 401);
       const token = randomToken(), tokenHash = await sha256(token), expires = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString();
       await db.from('member_sessions').delete().eq('member_id', member.id).lt('expires_at', new Date().toISOString());
       const { error } = await db.from('member_sessions').insert({ member_id: member.id, token_hash: tokenHash, expires_at: expires });
@@ -117,7 +118,7 @@ Deno.serve(async req => {
       const currentPin = String(body.currentPin || ''), newPin = String(body.newPin || '');
       if (!/^\d{5}$/.test(newPin)) return reply(req, { error: 'invalid_new_pin' }, 400);
       const { data: verified } = await db.rpc('verify_member_pin', { p_member_id: actor.id, p_pin: currentPin });
-      if (!verified?.length) return reply(req, { error: 'invalid_current_pin' }, 403);
+      if (!verified || !verified.length) return reply(req, { error: 'invalid_current_pin' }, 403);
       const { error: pinError } = await db.rpc('set_member_pin', { p_member_id: actor.id, p_new_pin: newPin });
       if (pinError) throw pinError;
       await audit(actor.id, 'change_pin', 'member', actor.id);
@@ -128,27 +129,27 @@ Deno.serve(async req => {
       const phase = Number(body.phase), date = String(body.date || '');
       if (![1, 2, 3].includes(phase) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return reply(req, { error: 'invalid_booking' }, 400);
       const { data: targetMember } = await db.from('members').select('id,unit,is_active').eq('id', targetId).maybeSingle();
-      if (!targetMember?.is_active) return reply(req, { error: 'member_not_found' }, 404);
+      if (!targetMember || !targetMember.is_active) return reply(req, { error: 'member_not_found' }, 404);
       if (phase !== 3 && !['ICU', '病房'].includes(targetMember.unit)) return reply(req, { error: 'unit_long_leave_only' }, 403);
       if (phase === 3 && !['ICU', '病房', '小夜', '大夜'].includes(targetMember.unit)) return reply(req, { error: 'blank_unit_no_long_leave' }, 403);
       const longLeaveDays = Math.min(7, Math.max(1, Number(body.longLeaveDays || 7)));
       const dates = phase === 3 ? longLeaveDates(date, longLeaveDays) : [date];
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
-      if (existing?.length) return reply(req, { error: 'booking_conflict' }, 409);
+      if (existing && existing.length) return reply(req, { error: 'booking_conflict' }, 409);
       if (phase !== 3 && (!actor.is_admin || targetId === actor.id)) {
         const { data: settings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase1_other_limit,phase2_member_limit').eq('id', 1).single();
-        const monthStart = String(settings?.booking_month || '').slice(0, 10);
+        const monthStart = String((settings && settings.booking_month) || '').slice(0, 10);
         const monthPrefix = monthStart.slice(0, 7);
         if (!date.startsWith(monthPrefix)) return reply(req, { error: 'invalid_booking' }, 400);
         const monthEnd = new Date(`${monthStart}T12:00:00Z`);
         monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
         const { count: monthCount } = await db.from('bookings').select('id', { count: 'exact', head: true }).eq('member_id', targetId).neq('status', 'cancelled').in('phase', [1, 2]).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
-        if ((monthCount || 0) >= Number(settings?.phase2_member_limit || 0)) return reply(req, { error: 'monthly_leave_limit' }, 403);
+        if ((monthCount || 0) >= Number((settings && settings.phase2_member_limit) || 0)) return reply(req, { error: 'monthly_leave_limit' }, 403);
         if (phase === 1) {
           const { data: phase1Rows } = await db.from('bookings').select('booking_date').eq('member_id', targetId).neq('status', 'cancelled').eq('phase', 1).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
           const targetIsAdjacent = isHolidayAdjacent(date);
-          const phase1KindCount = (phase1Rows || []).filter((row: any) => isHolidayAdjacent(String(row.booking_date).slice(0, 10)) === targetIsAdjacent).length;
-          const limit = targetIsAdjacent ? Number(settings?.phase1_member_limit || 0) : Number(settings?.phase1_other_limit || 0);
+          const phase1KindCount = (phase1Rows || []).filter((row) => isHolidayAdjacent(String(row.booking_date).slice(0, 10)) === targetIsAdjacent).length;
+          const limit = targetIsAdjacent ? Number((settings && settings.phase1_member_limit) || 0) : Number((settings && settings.phase1_other_limit) || 0);
           if (phase1KindCount >= limit) return reply(req, { error: targetIsAdjacent ? 'phase1_holiday_limit' : 'phase1_other_limit' }, 403);
         }
       }
@@ -156,7 +157,8 @@ Deno.serve(async req => {
       const rows = dates.map(booking_date => ({ member_id: targetId, booking_date, phase, long_leave_block_id: block, created_by: actor.id, admin_adjusted: actor.is_admin && targetId !== actor.id }));
       const { data, error } = await db.from('bookings').insert(rows).select('id');
       if (error) throw error;
-      await audit(actor.id, 'create_booking', 'booking', block || data?.[0]?.id || null, null, { memberId: targetId, dates, phase });
+      const firstBookingId = data && data[0] ? data[0].id : null;
+      await audit(actor.id, 'create_booking', 'booking', block || firstBookingId, null, { memberId: targetId, dates, phase });
       return reply(req, { ok: true, blockId: block });
     }
     if (action === 'cancel') {
@@ -194,18 +196,21 @@ Deno.serve(async req => {
     if (action === 'save-admin') {
       if (!actor.is_admin) return reply(req, { error: 'forbidden' }, 403);
       const settings = body.settings || {}, members = Array.isArray(body.members) ? body.members : [];
-      if (!members.length || members.filter((m: any) => m.isAdmin).length !== 1) return reply(req, { error: 'single_admin_required' }, 400);
-      const activeIds = members.map((m: any) => String(m.id || '')).filter((id: string) => /^[0-9a-f-]{36}$/i.test(id));
+      if (!members.length || members.filter((m) => m.isAdmin).length !== 1) return reply(req, { error: 'single_admin_required' }, 400);
+      const activeIds = members.map((m) => String(m.id || '')).filter((id) => /^[0-9a-f-]{36}$/i.test(id));
       if (activeIds.length) await db.from('members').update({ is_active: false }).not('id', 'in', `(${activeIds.join(',')})`);
       await db.from('members').update({ is_admin: false }).eq('is_admin', true);
       for (const item of members) {
-        const requestedUnit = String(item.unit ?? '');
+        const requestedUnit = String(item.unit == null ? '' : item.unit);
         const values = { name: String(item.name || '').trim(), unit: ['ICU','病房','小夜','大夜',''].includes(requestedUnit) ? requestedUnit : '', is_admin: !!item.isAdmin, is_active: true };
         if (!values.name) continue;
         if (/^[0-9a-f-]{36}$/i.test(String(item.id || ''))) {
           const { error } = await db.from('members').update(values).eq('id', item.id); if (error) throw error;
         } else {
-          const { error } = await db.from('members').insert({ ...values, pin_hash: await (async()=>{const { data, error }=await db.rpc('hash_pin',{p_pin:'00000'});if(error)throw error;return data})() }); if (error) throw error;
+          const { data: defaultPinHash, error: hashError } = await db.rpc('hash_pin', { p_pin: '00000' });
+          if (hashError) throw hashError;
+          const { error } = await db.from('members').insert({ ...values, pin_hash: defaultPinHash });
+          if (error) throw error;
         }
       }
       const row = {

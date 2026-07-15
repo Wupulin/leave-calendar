@@ -5,3 +5,4 @@
 .quota-num{font-weight:900;font-size:1.08em;padding:0 .12em}.quota-limit{color:#2563a8}.quota-used{color:#a94e3f}.quota-left{color:#1f7a4d}
 .clear-month{display:flex;align-items:center;gap:8px;color:#6c7c77}.clear-month input{width:150px}
 #longOptions{border-top:1px solid var(--line);margin-top:12px;padding-top:12px}#longOptions[hidden]{display:none!important}#longOptions label{display:grid;gap:6px}#longOptions p{margin:8px 0 0;color:#6c7c77;font-size:.92rem}
+.names b{display:inline-block;margin-right:3px;padding:0 3px;border-radius:4px;background:#fff8;font-size:.88em}.names.phase-1 b{color:#8a3327}.names.phase-2 b{color:#2563a8}
