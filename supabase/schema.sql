@@ -30,6 +30,7 @@ create table if not exists public.phase_settings (
   long_leave_start_month date not null check (long_leave_start_month = date_trunc('month', long_leave_start_month)::date),
   long_leave_end_month date not null check (long_leave_end_month = date_trunc('month', long_leave_end_month)::date),
   phase1_member_limit integer not null default 2 check (phase1_member_limit > 0),
+  phase1_other_limit integer not null default 2 check (phase1_other_limit > 0),
   phase2_member_limit integer not null default 31 check (phase2_member_limit > 0),
   icu_daily_limit integer not null default 1 check (icu_daily_limit > 0),
   ward_daily_limit integer not null default 3 check (ward_daily_limit > 0),

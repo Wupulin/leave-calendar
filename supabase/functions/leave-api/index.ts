@@ -49,6 +49,25 @@ async function audit(actor: string | null, action: string, type: string, id: str
 function addDays(date: string, amount: number) {
   const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + amount); return d.toISOString().slice(0, 10);
 }
+const holidays = new Set(['2026-01-01','2026-02-16','2026-02-17','2026-02-18','2026-02-19','2026-02-20','2026-02-27','2026-04-03','2026-04-06','2026-05-01','2026-06-19','2026-09-25','2026-09-28','2026-10-09','2026-10-26','2026-12-25']);
+function isHoliday(date: string) {
+  const d = new Date(`${date}T12:00:00Z`);
+  return d.getUTCDay() === 0 || d.getUTCDay() === 6 || holidays.has(date);
+}
+function isHolidayAdjacent(date: string) {
+  return !isHoliday(date) && (isHoliday(addDays(date, -1)) || isHoliday(addDays(date, 1)));
+}
+function longLeaveDates(startDate: string, leaveDays: number) {
+  const dates: string[] = [];
+  let date = startDate, workdays = 0, guard = 0;
+  while (workdays < leaveDays && guard < 40) {
+    dates.push(date);
+    if (!isHoliday(date)) workdays += 1;
+    date = addDays(date, 1);
+    guard += 1;
+  }
+  return dates;
+}
 
 Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(req) });
@@ -112,11 +131,12 @@ Deno.serve(async req => {
       if (!targetMember?.is_active) return reply(req, { error: 'member_not_found' }, 404);
       if (phase !== 3 && !['ICU', '病房'].includes(targetMember.unit)) return reply(req, { error: 'unit_long_leave_only' }, 403);
       if (phase === 3 && !['ICU', '病房', '小夜', '大夜'].includes(targetMember.unit)) return reply(req, { error: 'blank_unit_no_long_leave' }, 403);
-      const dates = phase === 3 ? Array.from({ length: 7 }, (_, i) => addDays(date, i)) : [date];
+      const longLeaveDays = Math.min(7, Math.max(1, Number(body.longLeaveDays || 7)));
+      const dates = phase === 3 ? longLeaveDates(date, longLeaveDays) : [date];
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
       if (existing?.length) return reply(req, { error: 'booking_conflict' }, 409);
       if (!actor.is_admin && phase !== 3) {
-        const { data: settings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase2_member_limit').eq('id', 1).single();
+        const { data: settings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase1_other_limit,phase2_member_limit').eq('id', 1).single();
         const monthStart = String(settings?.booking_month || '').slice(0, 10);
         const monthPrefix = monthStart.slice(0, 7);
         if (!date.startsWith(monthPrefix)) return reply(req, { error: 'invalid_booking' }, 400);
@@ -125,8 +145,11 @@ Deno.serve(async req => {
         const { count: monthCount } = await db.from('bookings').select('id', { count: 'exact', head: true }).eq('member_id', targetId).neq('status', 'cancelled').in('phase', [1, 2]).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
         if ((monthCount || 0) >= Number(settings?.phase2_member_limit || 0)) return reply(req, { error: 'monthly_leave_limit' }, 403);
         if (phase === 1) {
-          const { count: phase1Count } = await db.from('bookings').select('id', { count: 'exact', head: true }).eq('member_id', targetId).neq('status', 'cancelled').eq('phase', 1).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
-          if ((phase1Count || 0) >= Number(settings?.phase1_member_limit || 0)) return reply(req, { error: 'phase1_leave_limit' }, 403);
+          const { data: phase1Rows } = await db.from('bookings').select('booking_date').eq('member_id', targetId).neq('status', 'cancelled').eq('phase', 1).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
+          const targetIsAdjacent = isHolidayAdjacent(date);
+          const phase1KindCount = (phase1Rows || []).filter((row: any) => isHolidayAdjacent(String(row.booking_date).slice(0, 10)) === targetIsAdjacent).length;
+          const limit = targetIsAdjacent ? Number(settings?.phase1_member_limit || 0) : Number(settings?.phase1_other_limit || 0);
+          if (phase1KindCount >= limit) return reply(req, { error: targetIsAdjacent ? 'phase1_holiday_limit' : 'phase1_other_limit' }, 403);
         }
       }
       const block = phase === 3 ? crypto.randomUUID() : null;
@@ -191,7 +214,7 @@ Deno.serve(async req => {
         phase2_start: settings.p2Start, phase2_end: settings.p2End,
         phase3_start: settings.p3Start, phase3_end: settings.p3End,
         long_leave_start_month: `${settings.longStart}-01`, long_leave_end_month: `${settings.longEnd}-01`,
-        phase1_member_limit: Number(settings.p1Max), phase2_member_limit: Number(settings.p2Max),
+        phase1_member_limit: Number(settings.p1Max), phase1_other_limit: Number(settings.p1OtherMax), phase2_member_limit: Number(settings.p2Max),
         icu_daily_limit: Number(settings.icuMax), ward_daily_limit: Number(settings.wardMax),
         long_leave_daily_limit: 1, updated_by: actor.id
       };
