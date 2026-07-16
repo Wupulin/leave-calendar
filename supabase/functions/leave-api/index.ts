@@ -51,19 +51,25 @@ function addDays(date, amount) {
   const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + amount); return d.toISOString().slice(0, 10);
 }
 const holidays = new Set(['2026-01-01','2026-02-16','2026-02-17','2026-02-18','2026-02-19','2026-02-20','2026-02-27','2026-04-03','2026-04-06','2026-05-01','2026-06-19','2026-09-25','2026-09-28','2026-10-09','2026-10-26','2026-12-25']);
-function isHoliday(date) {
+function hasHolidayOverride(customHolidays, date) {
+  return Object.prototype.hasOwnProperty.call(customHolidays || {}, date);
+}
+function baseHoliday(date) {
   const d = new Date(`${date}T12:00:00Z`);
   return d.getUTCDay() === 0 || d.getUTCDay() === 6 || holidays.has(date);
 }
-function isHolidayAdjacent(date) {
-  return !isHoliday(date) && (isHoliday(addDays(date, -1)) || isHoliday(addDays(date, 1)));
+function isHoliday(date, customHolidays = {}) {
+  return hasHolidayOverride(customHolidays, date) ? !!customHolidays[date] : baseHoliday(date);
 }
-function longLeaveDates(startDate, leaveDays) {
+function isHolidayAdjacent(date, customHolidays = {}) {
+  return !isHoliday(date, customHolidays) && (isHoliday(addDays(date, -1), customHolidays) || isHoliday(addDays(date, 1), customHolidays));
+}
+function longLeaveDates(startDate, leaveDays, customHolidays = {}) {
   const dates = [];
   let date = startDate, workdays = 0, guard = 0;
   while (workdays < leaveDays && guard < 40) {
     dates.push(date);
-    if (!isHoliday(date)) workdays += 1;
+    if (!isHoliday(date, customHolidays)) workdays += 1;
     date = addDays(date, 1);
     guard += 1;
   }
@@ -136,12 +142,14 @@ Deno.serve(async (req) => {
         const { data: existingLongLeave } = await db.from('bookings').select('id').eq('member_id', targetId).eq('phase', 3).neq('status', 'cancelled').limit(1);
         if (existingLongLeave && existingLongLeave.length) return reply(req, { error: 'long_leave_once' }, 403);
       }
+      const { data: globalSettings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase1_other_limit,phase2_member_limit,custom_holidays').eq('id', 1).single();
+      const customHolidays = (globalSettings && globalSettings.custom_holidays) || {};
       const longLeaveDays = Math.min(7, Math.max(1, Number(body.longLeaveDays || 7)));
-      const dates = phase === 3 ? longLeaveDates(date, longLeaveDays) : [date];
+      const dates = phase === 3 ? longLeaveDates(date, longLeaveDays, customHolidays) : [date];
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
       if (existing && existing.length) return reply(req, { error: 'booking_conflict' }, 409);
       if (phase !== 3 && (!actor.is_admin || targetId === actor.id)) {
-        const { data: settings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase1_other_limit,phase2_member_limit').eq('id', 1).single();
+        const settings = globalSettings;
         const monthStart = String((settings && settings.booking_month) || '').slice(0, 10);
         const monthPrefix = monthStart.slice(0, 7);
         if (!date.startsWith(monthPrefix)) return reply(req, { error: 'invalid_booking' }, 400);
@@ -153,8 +161,8 @@ Deno.serve(async (req) => {
           const { data: phase1Rows } = await db.from('bookings').select('booking_date').eq('member_id', targetId).neq('status', 'cancelled').eq('phase', 1).gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
           const phase1Total = (phase1Rows || []).length;
           if (phase1Total >= Number((settings && settings.phase1_other_limit) || 0)) return reply(req, { error: 'phase1_other_limit' }, 403);
-          if (isHolidayAdjacent(date)) {
-            const phase1HolidayCount = (phase1Rows || []).filter((row) => isHolidayAdjacent(String(row.booking_date).slice(0, 10))).length;
+          if (isHolidayAdjacent(date, customHolidays)) {
+            const phase1HolidayCount = (phase1Rows || []).filter((row) => isHolidayAdjacent(String(row.booking_date).slice(0, 10), customHolidays)).length;
             if (phase1HolidayCount >= Number((settings && settings.phase1_member_limit) || 0)) return reply(req, { error: 'phase1_holiday_limit' }, 403);
           }
         }
@@ -178,6 +186,33 @@ Deno.serve(async (req) => {
       if (error) throw error;
       await audit(actor.id, 'cancel_booking', 'booking', booking.long_leave_block_id || booking.id, booking, null);
       return reply(req, { ok: true });
+    }
+    if (action === 'set-holiday') {
+      if (!actor.is_admin) return reply(req, { error: 'forbidden' }, 403);
+      const date = String(body.date || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return reply(req, { error: 'invalid_booking' }, 400);
+      const nextValue = !!body.holiday;
+      const { data: settings } = await db.from('phase_settings').select('custom_holidays').eq('id', 1).single();
+      const before = (settings && settings.custom_holidays) || {};
+      const after = { ...before, [date]: nextValue };
+      const { error } = await db.from('phase_settings').update({ custom_holidays: after, updated_by: actor.id }).eq('id', 1);
+      if (error) throw error;
+      await audit(actor.id, 'set_holiday_override', 'phase_settings', '1', before, after);
+      return reply(req, { ok: true, customHolidays: after });
+    }
+    if (action === 'set-note') {
+      if (!actor.is_admin) return reply(req, { error: 'forbidden' }, 403);
+      const date = String(body.date || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return reply(req, { error: 'invalid_booking' }, 400);
+      const note = String(body.note || '').trim().slice(0, 80);
+      const { data: settings } = await db.from('phase_settings').select('day_notes').eq('id', 1).single();
+      const before = (settings && settings.day_notes) || {};
+      const after = { ...before };
+      if (note) after[date] = note; else delete after[date];
+      const { error } = await db.from('phase_settings').update({ day_notes: after, updated_by: actor.id }).eq('id', 1);
+      if (error) throw error;
+      await audit(actor.id, 'set_day_note', 'phase_settings', '1', before, after);
+      return reply(req, { ok: true, dayNotes: after });
     }
     if (action === 'reset-pin') {
       if (!actor.is_admin) return reply(req, { error: 'forbidden' }, 403);

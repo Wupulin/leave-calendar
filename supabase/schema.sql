@@ -29,6 +29,8 @@ create table if not exists public.phase_settings (
   phase3_end date not null,
   long_leave_start_month date not null check (long_leave_start_month = date_trunc('month', long_leave_start_month)::date),
   long_leave_end_month date not null check (long_leave_end_month = date_trunc('month', long_leave_end_month)::date),
+  custom_holidays jsonb not null default '{}'::jsonb,
+  day_notes jsonb not null default '{}'::jsonb,
   phase1_member_limit integer not null default 2 check (phase1_member_limit > 0),
   phase1_other_limit integer not null default 2 check (phase1_other_limit > 0),
   phase2_member_limit integer not null default 31 check (phase2_member_limit > 0),
