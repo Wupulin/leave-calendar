@@ -70,7 +70,7 @@ function applyCloudState(data,resetView=false){
   if(resetView)view=new Date(`${state.schedule.bookingMonth}-01T12:00:00`);
 }
 async function cloudRefresh(resetView=false){const data=await cloudCall('state');applyCloudState(data,resetView);render();return data}
-function cloudMessage(code){return({invalid_login:'姓名或 PIN 不正確',unauthorized:'登入已過期，請重新登入',booking_conflict:'這段日期已有預約',invalid_booking:'預約資料不正確',invalid_month:'請選擇正確的月份',invalid_current_pin:'目前 PIN 不正確',invalid_new_pin:'新 PIN 必須為 5 位數字',unit_long_leave_only:'小夜、大夜及空白類別只能預約長假',blank_unit_no_long_leave:'空白班別不可預約長假',long_leave_once:'每位成員只能預約一次長假',monthly_leave_limit:'已達本月第一、二階段可預假天數上限',phase1_leave_limit:'已達第一階段可預假天數上限',phase1_holiday_limit:'已達第一階段「假日前後」可預約天數上限',phase1_other_limit:'已達第一階段總上限',member_not_found:'找不到此成員',forbidden:'沒有操作權限',unknown_action:'雲端 leave-api 尚未更新，請重新部署 Edge Function',server_error:'雲端 leave-api 執行失敗，請重新部署或查看 Supabase Logs'}[code]||`雲端操作失敗${code?`：${code}`:''}`)}
+function cloudMessage(code){return({invalid_backup:'備份檔格式、來源或管理員不符，無法還原',invalid_login:'姓名或 PIN 不正確',unauthorized:'登入已過期，請重新登入',booking_conflict:'這段日期已有預約',invalid_booking:'預約資料不正確',invalid_month:'請選擇正確的月份',invalid_current_pin:'目前 PIN 不正確',invalid_new_pin:'新 PIN 必須為 5 位數字',unit_long_leave_only:'小夜、大夜及空白類別只能預約長假',blank_unit_no_long_leave:'空白班別不可預約長假',long_leave_once:'每位成員只能預約一次長假',monthly_leave_limit:'已達本月第一、二階段可預假天數上限',phase1_leave_limit:'已達第一階段可預假天數上限',phase1_holiday_limit:'已達第一階段「假日前後」可預約天數上限',phase1_other_limit:'已達第一階段總上限',member_not_found:'找不到此成員',forbidden:'沒有操作權限',unknown_action:'雲端 leave-api 尚未更新，請重新部署 Edge Function',server_error:'雲端 leave-api 執行失敗，請重新部署或查看 Supabase Logs'}[code]||`雲端操作失敗${code?`：${code}`:''}`)}
 async function cloudBoot(){
   if(!cloudEnabled)return;
   try{
@@ -97,3 +97,50 @@ if(cloudEnabled){
   cloudBoot();
   setInterval(()=>{if(me()&&!document.querySelector('dialog[open]'))cloudRefresh().catch(()=>{})},15000);
 }
+
+// 管理員備份；備份檔只在本機下載，不存入瀏覽器快取。
+let backupBusy=false;
+function backupSummary(b){
+  if(b?.format!=='np-leave-backup'||b.version!==1||!Array.isArray(b.data?.members)||!b.data.members.length||!Array.isArray(b.data?.bookings)||!b.data.settings)throw new Error('備份檔格式不正確');
+  if(b.project!==(cloudEnabled?cloudConfig.url:'local'))throw new Error('此備份不屬於目前的資料來源');
+  if(!b.data.members.some(m=>m.id===me()?.id&&(cloudEnabled?m.is_admin&&m.is_active:m.admin)))throw new Error('備份中的管理員與目前登入者不符');
+  return `備份時間：${b.exportedAt||'未知'}\n成員：${b.data.members.length} 人\n預約：${b.data.bookings.length} 筆`;
+}
+async function downloadFullBackup(){
+  if(!me()?.admin)throw new Error('僅管理員可備份');
+  const backup=cloudEnabled?await cloudCall('export-backup'):{format:'np-leave-backup',version:1,project:'local',exportedAt:new Date().toISOString(),data:{members:structuredClone(state.members),settings:{schedule:state.schedule,limits:state.limits,phaseLimits:state.phaseLimits,customHolidays:state.customHolidays,dayNotes:state.dayNotes},bookings:Object.entries(state.bookings).flatMap(([date,rows])=>rows.map(row=>({date,...row})))}};
+  backupSummary(backup);
+  const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=`leave-backup-${backup.exportedAt.replace(/[:.]/g,'-')}.json`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+  return backup;
+}
+async function backupAction(action){
+  if(backupBusy||!me()?.admin)return;
+  backupBusy=true;$('#backupStatus').textContent='處理中…';
+  try{await action()}catch(e){$('#backupStatus').textContent=e.code?cloudMessage(e.code):e.message}finally{backupBusy=false}
+}
+$('#downloadBackup').onclick=()=>backupAction(async()=>{await downloadFullBackup();$('#backupStatus').textContent='已送出備份下載，請確認檔案已儲存。'});
+$('#restoreBackup').onclick=()=>backupAction(async()=>{
+  const file=$('#backupFile').files[0];if(!file)throw new Error('請先選擇備份檔');
+  if(file.size>20*1024*1024)throw new Error('備份檔超過 20 MB，請由資料庫管理員協助還原');
+  const backup=JSON.parse(await file.text()),summary=backupSummary(backup);
+  if(!confirm(`${summary}\n\n還原將取代全部預約與設定，並還原成員及 PIN。繼續前會下載目前資料的備份。是否繼續？`)){$('#backupStatus').textContent='已取消還原';return}
+  await downloadFullBackup();
+  if(!confirm('請確認還原前備份已下載並儲存，再按「確定」執行還原。')){$('#backupStatus').textContent='已取消還原';return}
+  if(cloudEnabled){await cloudCall('restore-backup',{backup});await cloudRefresh(true)}
+  else{
+    const settings=backup.data.settings;
+    if(!settings.schedule||!settings.limits||!settings.phaseLimits)throw new Error('備份設定不完整');
+    const bookings={};for(const row of backup.data.bookings){if(!/^\d{4}-\d{2}-\d{2}$/.test(row.date)||!backup.data.members.some(m=>m.id===row.memberId)||![1,2,3].includes(row.phase))throw new Error('備份預約資料不正確');const {date,...entry}=row;(bookings[date]??=[]).push(entry)}
+    const next={...state,...settings,members:backup.data.members,bookings};
+    localStorage.setItem('npLeavePlanner',JSON.stringify(next));state=next;render();
+  }
+  $('#backupFile').value='';$('#backupStatus').textContent='備份還原完成';
+});
+const clearWithBackup=$('#clearBookings').onclick;
+$('#clearBookings').onclick=()=>backupAction(async()=>{
+  if(!/^\d{4}-\d{2}$/.test($('#clearMonth').value))throw new Error('請選擇要清除的月份');
+  await downloadFullBackup();
+  if(!confirm('清除前備份已送出下載。請確認檔案已儲存，再繼續清除。')){$('#backupStatus').textContent='已取消清除';return}
+  await clearWithBackup();$('#backupStatus').textContent='備份下載已送出';
+});

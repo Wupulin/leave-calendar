@@ -99,12 +99,32 @@ Deno.serve(async (req) => {
     if (!auth) return reply(req, { error: 'unauthorized' }, 401);
     const actor = auth.member;
 
+    if (action === 'export-backup' || action === 'restore-backup') {
+      if (!actor.is_admin) return reply(req, { error: 'forbidden' }, 403);
+      if (action === 'export-backup') {
+        const { data, error } = await db.rpc('export_leave_backup');
+        if (error) throw error;
+        return reply(req, { format: 'np-leave-backup', version: 1, project: url, exportedAt: new Date().toISOString(), data });
+      }
+      const backup = body.backup;
+      if (backup?.format !== 'np-leave-backup' || backup.version !== 1 || backup.project !== url ||
+          !Array.isArray(backup.data?.members) || !backup.data.members.length ||
+          !Array.isArray(backup.data?.bookings) || backup.data?.settings?.id !== 1 ||
+          !backup.data.members.some(m => m.id === actor.id && m.is_admin && m.is_active)) {
+        return reply(req, { error: 'invalid_backup' }, 400);
+      }
+      const { error } = await db.rpc('restore_leave_backup', { p_data: backup.data, p_actor: actor.id });
+      if (error) throw error;
+      return reply(req, { ok: true });
+    }
     if (action === 'state') {
-      const [{ data: members }, { data: settings }, { data: bookings }] = await Promise.all([
+      const results = await Promise.all([
         db.from('members').select('id,name,unit,is_admin,is_active').eq('is_active', true).order('name'),
         db.from('phase_settings').select('*').eq('id', 1).single(),
         db.from('bookings').select('id,member_id,booking_date,unit_at_booking,phase,long_leave_block_id,status,admin_adjusted').neq('status', 'cancelled')
       ]);
+      for (const result of results) if (result.error) throw result.error;
+      const [{ data: members }, { data: settings }, { data: bookings }] = results;
       return reply(req, { members, settings, bookings, currentMember: actor });
     }
     if (action === 'logout') {
@@ -221,6 +241,10 @@ Deno.serve(async (req) => {
       const monthStart = `${month}-01`;
       const monthEnd = new Date(`${monthStart}T12:00:00Z`);
       monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+      const { data: snapshot, error: backupError } = await db.rpc('export_leave_backup');
+      if (backupError) throw backupError;
+      const { error: archiveError } = await db.from('system_backups').insert({ actor_id: actor.id, reason: `before_clear_${month}`, payload: snapshot });
+      if (archiveError) throw archiveError;
       const { error } = await db.from('bookings').update({ status: 'cancelled' }).neq('status', 'cancelled').gte('booking_date', monthStart).lt('booking_date', monthEnd.toISOString().slice(0, 10));
       if (error) throw error;
       await audit(actor.id, 'clear_bookings', 'booking', null, null, { scope: 'month', month });
