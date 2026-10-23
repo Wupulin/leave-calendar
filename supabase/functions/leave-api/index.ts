@@ -64,16 +64,8 @@ function isHoliday(date, customHolidays = {}) {
 function isHolidayAdjacent(date, customHolidays = {}) {
   return !isHoliday(date, customHolidays) && (isHoliday(addDays(date, -1), customHolidays) || isHoliday(addDays(date, 1), customHolidays));
 }
-function longLeaveDates(startDate, leaveDays, customHolidays = {}) {
-  const dates = [];
-  let date = startDate, workdays = 0, guard = 0;
-  while (workdays < leaveDays && guard < 40) {
-    dates.push(date);
-    if (!isHoliday(date, customHolidays)) workdays += 1;
-    date = addDays(date, 1);
-    guard += 1;
-  }
-  return dates;
+function longLeaveDates(startDate, leaveDays) {
+  return Array.from({ length: leaveDays }, (_, index) => addDays(startDate, index));
 }
 
 Deno.serve(async (req) => {
@@ -111,7 +103,7 @@ Deno.serve(async (req) => {
       const [{ data: members }, { data: settings }, { data: bookings }] = await Promise.all([
         db.from('members').select('id,name,unit,is_admin,is_active').eq('is_active', true).order('name'),
         db.from('phase_settings').select('*').eq('id', 1).single(),
-        db.from('bookings').select('id,member_id,booking_date,phase,long_leave_block_id,status,admin_adjusted').neq('status', 'cancelled')
+        db.from('bookings').select('id,member_id,booking_date,unit_at_booking,phase,long_leave_block_id,status,admin_adjusted').neq('status', 'cancelled')
       ]);
       return reply(req, { members, settings, bookings, currentMember: actor });
     }
@@ -144,8 +136,8 @@ Deno.serve(async (req) => {
       }
       const { data: globalSettings } = await db.from('phase_settings').select('booking_month,phase1_member_limit,phase1_other_limit,phase2_member_limit,custom_holidays').eq('id', 1).single();
       const customHolidays = (globalSettings && globalSettings.custom_holidays) || {};
-      const longLeaveDays = Math.min(7, Math.max(1, Number(body.longLeaveDays || 7)));
-      const dates = phase === 3 ? longLeaveDates(date, longLeaveDays, customHolidays) : [date];
+      const longLeaveDays = Math.min(10, Math.max(1, Math.trunc(Number(body.longLeaveDays) || 10)));
+      const dates = phase === 3 ? longLeaveDates(date, longLeaveDays) : [date];
       const { data: existing } = await db.from('bookings').select('id').eq('member_id', targetId).in('booking_date', dates).neq('status', 'cancelled');
       if (existing && existing.length) return reply(req, { error: 'booking_conflict' }, 409);
       if (phase !== 3 && (!actor.is_admin || targetId === actor.id)) {
@@ -168,7 +160,7 @@ Deno.serve(async (req) => {
         }
       }
       const block = phase === 3 ? crypto.randomUUID() : null;
-      const rows = dates.map(booking_date => ({ member_id: targetId, booking_date, phase, long_leave_block_id: block, created_by: actor.id, admin_adjusted: actor.is_admin && targetId !== actor.id }));
+      const rows = dates.map(booking_date => ({ member_id: targetId, booking_date, unit_at_booking: targetMember.unit || '', phase, long_leave_block_id: block, created_by: actor.id, admin_adjusted: actor.is_admin && targetId !== actor.id }));
       const { data, error } = await db.from('bookings').insert(rows).select('id');
       if (error) throw error;
       const firstBookingId = data && data[0] ? data[0].id : null;

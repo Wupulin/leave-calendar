@@ -48,6 +48,7 @@ create table if not exists public.bookings (
   id uuid primary key default gen_random_uuid(),
   member_id uuid not null references public.members(id),
   booking_date date not null,
+  unit_at_booking text not null default '',
   phase smallint not null check (phase in (1, 2, 3)),
   long_leave_block_id uuid,
   status text not null default 'reserved' check (status in ('reserved', 'confirmed', 'cancelled')),
