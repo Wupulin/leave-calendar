@@ -32,3 +32,16 @@ assert.equal(elements['#reserveBtn'].hidden,false);
 assert.equal(elements['#reserveBtn'].textContent,'取消我的第一階段預約');
 ui.items=()=>[];ui.openDay('2026-10-23');assert.equal(elements['#reserveBtn'].hidden,true);
 console.log('Passed: cancellation stays visible outside eligibility/open windows; new booking stays hidden.');
+assert.match(elements['#bookingList'].innerHTML,/目前沒有人預約/);
+ui.items=()=>[{memberId:'mine',phase:1},{memberId:'other',phase:1}];ui.openDay('2026-10-23');
+assert.equal((elements['#bookingList'].innerHTML.match(/data-remove=/g)||[]).length,1);
+assert.match(elements['#bookingList'].innerHTML,/data-remove="mine"/);
+(async()=>{
+ const calls=[],els={};
+ const env=vm.createContext({state:{phase:2},me:()=>({id:'mine',admin:false}),items:()=>[{id:'one',memberId:'mine',phase:1},{id:'two',memberId:'other',phase:1}],selected:'date',$:k=>els[k]??={close(){}},cloudCall:async(a,p)=>calls.push([a,p.bookingId]),cloudRefresh:async()=>{},toast(){},cloudMessage:x=>x});
+ const start=source.indexOf("  $('#bookingList').onclick=async");vm.runInContext(relevant+source.slice(start,source.indexOf('\n',start)),env);
+ const click=id=>els['#bookingList'].onclick({target:{closest:()=>({dataset:{remove:id,phase:'1'}})}});
+ await click('other');assert.equal(calls.length,0);
+ await click('mine');assert.deepEqual(calls,[['cancel','one']]);
+ console.log('Passed: inline cancel visible only for owner; cloud handler rejects other members.');
+})().catch(e=>{console.error(e);process.exitCode=1});
